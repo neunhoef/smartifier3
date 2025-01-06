@@ -1,3 +1,8 @@
+This is a - so far failed - attempt to translate a C++ program automatically
+to a Rust program using AI. The Current state does not compile and does not work
+as described. Might be continued in the future.
+
+
 Overview for `smartifier` Version 3
 -----------------------------------
 
