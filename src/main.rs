@@ -19,6 +19,12 @@ enum DataType {
 }
 
 #[derive(Debug)]
+struct VertexCollection {
+    coll_name: String,
+    file_name: String,
+}
+
+#[derive(Debug)]
 struct EdgeCollection {
     file_name: String,
     from_vertex_coll: String,
@@ -26,14 +32,14 @@ struct EdgeCollection {
     column_renames: Vec<(usize, String)>,
 }
 
-// A structure roughly corresponding to the C++ "Translation" struct,
+// A structure corresponding to the C++ "Translation" struct,
 // storing the mapping from "key -> attribute index" and from "attribute -> index".
 #[derive(Default)]
 struct Translation {
     key_tab: HashMap<String, u32>,
-    _att_tab: HashMap<String, u32>,
+    att_tab: HashMap<String, u32>,
     smart_attributes: Vec<String>,
-    _mem_usage: usize,
+    mem_usage: usize,
 }
 
 // -----------------------------------------------------------------------------
@@ -529,6 +535,13 @@ fn main() {
                         .num_args(1)
                         .help("If >0, take this many chars from the key for smart attribute"),
                 )
+                .arg(
+                    Arg::new("vertices")
+                        .long("vertices")
+                        .num_args(..)
+                        .required(true)
+                        .help("One ore more vertex specifications: <vertexcoll>:<vertexfile>"),
+                )
         )
         .get_matches();
 
@@ -614,6 +627,7 @@ fn main() {
                 .chars()
                 .next()
                 .unwrap();
+            let vertices_list = sub_m.get_many("vertices").unwrap();
             let edges_list = sub_m.get_many::<String>("edges").unwrap();
             let smart_index_str = sub_m
                 .get_one::<String>("smart-index")
@@ -625,12 +639,15 @@ fn main() {
                 smart_index_str.parse().unwrap_or(-1)
             };
 
+            let vertices_list: Vec<String> = vertices_list.map(|x: &String| x.clone()).collect();
+            let vertex_collections: Vec<VertexCollection> = parse_vertex_collections(vertices_list);
             let edges_list: Vec<String> = edges_list.map(|x| x.clone()).collect();
             let edge_collections = parse_edge_collections(edges_list);
             std::process::exit(do_edges(
                 data_type,
                 sep,
                 quo,
+                &vertex_collections,
                 &edge_collections,
                 smart_index,
             ));
@@ -800,9 +817,31 @@ fn do_vertices(
     0
 }
 
-// -----------------------------------------------------------------------------
-// do_edges: a greatly simplified version that handles only the main aspects
-// -----------------------------------------------------------------------------
+// ------------------------------------------
+// do_edges: rewrite edges for smartification
+// ------------------------------------------
+
+fn parse_vertex_collections(vertices_list: Vec<String>) -> Vec<VertexCollection> {
+    let mut res: Vec<VertexCollection> = vec![];
+    for v in vertices_list {
+        // Format: <collname>:<filename>
+        // We'll manually parse up to the third colon, then parse renames.
+        let parts: Vec<&str> = v.split(':').collect();
+        if parts.len() < 2 {
+            eprintln!(
+                "Invalid format for vertex collection spec '{}'. Skipping.",
+                v
+            );
+            continue;
+        }
+
+        res.push(VertexCollection {
+            coll_name: parts[0].to_string(),
+            file_name: parts[1].to_string(),
+        });
+    }
+    res
+}
 
 fn parse_edge_collections(edges_list: Vec<String>) -> Vec<EdgeCollection> {
     let mut collections = Vec::new();
@@ -810,15 +849,15 @@ fn parse_edge_collections(edges_list: Vec<String>) -> Vec<EdgeCollection> {
     for e in edges_list {
         // Format: <file>:<fromColl>:<toColl>[:<colIndex>:<newName> ...]
         // We'll manually parse up to the third colon, then parse renames.
-        let parts: Vec<_> = e.split(':').map(|s| s.to_string()).collect();
+        let parts: Vec<&str> = e.split(':').collect();
         if parts.len() < 3 {
             eprintln!("Invalid format for edge spec '{}'. Skipping.", e);
             continue;
         }
 
-        let file_name = parts[0].clone();
-        let from_vertex_coll = parts[1].clone();
-        let to_vertex_coll = parts[2].clone();
+        let file_name = parts[0].to_string();
+        let from_vertex_coll = parts[1].to_string();
+        let to_vertex_coll = parts[2].to_string();
 
         // The rest might be rename specs in pairs: (colIndex, newName)
         let mut renames = Vec::new();
@@ -827,7 +866,7 @@ fn parse_edge_collections(edges_list: Vec<String>) -> Vec<EdgeCollection> {
             let col_index_str = &parts[idx];
             let new_name = &parts[idx + 1];
             if let Ok(col_index) = col_index_str.parse::<usize>() {
-                renames.push((col_index, new_name.clone()));
+                renames.push((col_index, new_name.to_string()));
             }
             idx += 2;
         }
@@ -843,9 +882,7 @@ fn parse_edge_collections(edges_list: Vec<String>) -> Vec<EdgeCollection> {
     collections
 }
 
-/// Transforms edges in CSV. We do a minimal version that ensures `_from` and `_to`
-/// get turned into "att:KEY" if not already present, etc. This is simplified
-/// compared to the original C++ version.
+/// Transforms edges in CSV.
 fn transform_edges_csv(
     edge_coll: &EdgeCollection,
     sep: char,
@@ -1046,7 +1083,7 @@ fn transform_edges_csv(
         return 5;
     }
 
-    // rename old file -> .bak or remove, rename new file -> old
+    // remove old file, rename new file -> old
     std::fs::remove_file(&edge_coll.file_name).ok();
     std::fs::rename(&out_path, &in_path).ok();
 
@@ -1276,6 +1313,7 @@ fn do_edges(
     data_type: DataType,
     sep: char,
     quo: char,
+    vertex_collections: &[VertexCollection],
     edge_collections: &[EdgeCollection],
     smart_index: i32,
 ) -> i32 {
